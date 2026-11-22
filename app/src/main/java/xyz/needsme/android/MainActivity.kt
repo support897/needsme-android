@@ -1,0 +1,286 @@
+package xyz.needsme.android
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.webkit.ValueCallback
+import android.widget.FrameLayout
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+val Loam = Color(0xFF16120E); val Bone = Color(0xFFF0EAE0); val Sprout = Color(0xFFA8C256); val Muted = Color(0xFF6B6252)
+
+class MainActivity : ComponentActivity() {
+    lateinit var auth: AuthHost
+    private var fileCb: ValueCallback<Array<Uri>>? = null
+    var launchFile: ((ValueCallback<Array<Uri>>, Intent) -> Unit)? = null
+    private val userState = mutableStateOf<User?>(null)
+    private val checking = mutableStateOf(true)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        auth = AuthHost(this) { u -> userState.value = u; checking.value = false }
+        handleLink(intent)
+        setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Loam, secondary = Sprout, background = Color.White, surface = Color.White)) {
+            App(this, userState.value, checking.value)
+        } }
+    }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handleLink(intent) }
+    private fun handleLink(i: Intent?) { i?.data?.let { if (it.scheme == "needsme") auth.finish(it) } }
+    override fun onResume() { super.onResume(); auth.start() }
+    override fun onPause() { super.onPause(); auth.stop() }
+    fun logout(done: () -> Unit) { userState.value = null; auth.logout(done) }
+}
+
+@Composable
+fun App(act: MainActivity, user: User?, checking: Boolean) {
+    Surface(Modifier.fillMaxSize().systemBarsPadding(), color = Color.White) {
+        when {
+            user == null -> Box(Modifier.fillMaxSize()) {
+                AndroidView(factory = { c -> FrameLayout(c).also { it.show(act.auth.web) } }, update = { it.show(act.auth.web) }, modifier = Modifier.fillMaxSize())
+                if (checking) Box(Modifier.fillMaxSize().background(Color.White), Alignment.Center) { Text("NeedsMe Ai", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Loam) }
+            }
+            else -> Hub(act, user)
+        }
+    }
+}
+
+@Composable
+fun Hub(act: MainActivity, user: User) {
+    val ctx = act
+    val store = remember { Store(ctx) }
+    val all = remember { Catalog.parse(ctx.assets.open("catalog.json").bufferedReader().readText()) }
+    var accounts by remember { mutableStateOf(store.accounts) }
+    var tabs by remember { mutableStateOf(store.openTabs.filter { id -> store.account(id) != null }) }
+    var current by remember { mutableStateOf<String?>(null) } // null = Home
+    var picker by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Account?>(null) }
+    var adding by remember { mutableStateOf<AI?>(null) }
+    var settings by remember { mutableStateOf(false) }
+    var syncMsg by remember { mutableStateOf("Not synced yet") }
+    val scope = rememberCoroutineScope()
+    val webs = remember { mutableMapOf<String, AccountWeb>() }
+
+    val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val cb = pendingCb; pendingCb = null
+        cb?.onReceiveValue(android.webkit.WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
+    }
+    val pick: (ValueCallback<Array<Uri>>, Intent) -> Unit = { cb, i -> pendingCb?.onReceiveValue(null); pendingCb = cb; chooser.launch(i) }
+
+    fun persist(list: List<Account>) {
+        accounts = list; store.save(list)
+        scope.launch(Dispatchers.IO) { try { Sync.push(user.apiKey, user.refresh, user.uid, Store.encode(list)); syncMsg = "Synced" } catch (e: Exception) { syncMsg = "Not synced (${e.message})" } }
+    }
+    fun open(id: String) { if (id !in tabs) { tabs = tabs + id; store.setTabs(tabs) }; current = id }
+    fun close(id: String) {
+        tabs = tabs - id; store.setTabs(tabs); webs.remove(id)?.web?.destroy()
+        if (current == id) current = tabs.lastOrNull()
+    }
+    LaunchedEffect(user.uid) { // a new phone picks up the list from the account
+        if (store.accounts.isEmpty()) withContext(Dispatchers.IO) { Sync.pull(user.apiKey, user.refresh, user.uid) }?.let { j ->
+            val l = Store.decode(j); if (l.isNotEmpty()) { accounts = l; store.save(l); syncMsg = "Synced" }
+        }
+    }
+    BackHandler(current != null) {
+        val w = webs[current]?.web
+        if (w != null && w.canGoBack()) w.goBack() else current = null
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        TabStrip(accounts, tabs, current, onHome = { current = null }, onTab = { current = it }, onClose = ::close, onAdd = { picker = true })
+        Box(Modifier.weight(1f)) {
+            val cur = current?.let { store.account(it) ?: accounts.firstOrNull { a -> a.id == it } }
+            if (cur == null) Home(all, accounts, user, onOpen = ::open,
+                onPick = { ai -> val ex = accounts.firstOrNull { it.aiId == ai.id }; if (ex != null) open(ex.id) else adding = ai },
+                onAddAccount = { adding = it }, onEdit = { editing = it }, onSettings = { settings = true })
+            else {
+                val aw = webs.getOrPut(cur.id) { AccountWeb(act, cur, pick) }
+                AndroidView(factory = { c -> FrameLayout(c).also { it.show(aw.web) } }, update = { it.show(aw.web) }, modifier = Modifier.fillMaxSize())
+            }
+        }
+    }
+    if (picker) PickerDialog(all, accounts, onDismiss = { picker = false },
+        onAi = { ai -> picker = false; val ex = accounts.firstOrNull { it.aiId == ai.id }; if (ex != null) open(ex.id) else adding = ai })
+    adding?.let { ai -> AccountDialog(title = "Add ${ai.name}", initial = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = ""), onDismiss = { adding = null },
+        onSave = { a -> adding = null; persist(accounts + a); open(a.id) }, onDelete = null) }
+    editing?.let { a -> AccountDialog(title = "Edit ${a.title}", initial = a, onDismiss = { editing = null },
+        onSave = { n -> editing = null; persist(accounts.map { if (it.id == n.id) n else it }) },
+        onDelete = { editing = null; close(a.id); Profiles.delete(a.profile); persist(accounts.filter { it.id != a.id }) }) }
+    if (settings) SettingsDialog(user, syncMsg, onDismiss = { settings = false }, onLogout = {
+        settings = false; accounts.forEach { Profiles.delete(it.profile) }; store.clear(); webs.values.forEach { it.web.destroy() }; act.logout {}
+    })
+}
+private var pendingCb: ValueCallback<Array<Uri>>? = null
+
+@Composable
+fun TabStrip(accounts: List<Account>, tabs: List<String>, current: String?, onHome: () -> Unit, onTab: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit) {
+    LazyRow(Modifier.fillMaxWidth().background(Bone).padding(vertical = 6.dp), contentPadding = PaddingValues(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        item { Chip("Home", current == null, onHome) }
+        items(tabs) { id ->
+            val a = accounts.firstOrNull { it.id == id } ?: return@items
+            Row(Modifier.clip(RoundedCornerShape(20.dp)).background(if (current == id) Loam else Color.White).clickable { onTab(id) }.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(a.initial, color = if (current == id) Bone else Loam, fontSize = 13.sp, modifier = Modifier.padding(end = 6.dp))
+                Text(a.title, color = if (current == id) Bone else Loam, fontSize = 13.sp, maxLines = 1)
+                Text("x", color = if (current == id) Bone else Muted, fontSize = 14.sp, modifier = Modifier.clickable { onClose(id) }.padding(horizontal = 10.dp, vertical = 2.dp))
+            }
+        }
+        item { Box(Modifier.size(34.dp).clip(CircleShape).background(Sprout).clickable { onAdd() }, Alignment.Center) { Text("+", color = Loam, fontSize = 20.sp, fontWeight = FontWeight.Bold) } }
+    }
+}
+
+@Composable
+fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(Modifier.clip(RoundedCornerShape(20.dp)).background(if (selected) Loam else Color.White).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 8.dp)) {
+        Text(text, color = if (selected) Bone else Loam, fontSize = 13.sp)
+    }
+}
+
+@Composable
+fun Home(all: List<AI>, accounts: List<Account>, user: User, onOpen: (String) -> Unit, onPick: (AI) -> Unit, onAddAccount: (AI) -> Unit, onEdit: (Account) -> Unit, onSettings: () -> Unit) {
+    var q by remember { mutableStateOf("") }
+    var group by remember { mutableStateOf("All") }
+    var custom by remember { mutableStateOf(false) }
+    val groups = remember(all) { listOf("All") + all.map { it.group }.distinct() }
+    val shown = Catalog.filter(all, q, group)
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Your AIs", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Loam)
+                    Text("Sign in once. Stay signed in.", color = Muted, fontSize = 14.sp)
+                }
+                TextButton(onClick = onSettings) { Text("Settings", color = Loam) }
+            }
+        }
+        if (accounts.isNotEmpty()) item {
+            Text("Switch account", fontWeight = FontWeight.SemiBold, color = Loam, modifier = Modifier.padding(bottom = 6.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                items(accounts) { a ->
+                    Column(Modifier.width(72.dp).clickable { onOpen(a.id) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.size(56.dp).clip(CircleShape).background(Bone).clickable { onOpen(a.id) }, Alignment.Center) { Text(a.initial, fontSize = 22.sp, color = Loam) }
+                        Text(a.title, fontSize = 12.sp, maxLines = 1, color = Loam)
+                        Text("Edit", fontSize = 11.sp, color = Muted, modifier = Modifier.clickable { onEdit(a) })
+                    }
+                }
+            }
+        }
+        item { OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search ${all.size} AIs") }, shape = RoundedCornerShape(14.dp)) }
+        item { LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { items(groups) { g -> Chip(g, g == group) { group = g } } } }
+        items(shown.chunked(2)) { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { ai ->
+                    val n = accounts.count { it.aiId == ai.id }
+                    Card(Modifier.weight(1f).clickable { onPick(ai) }, colors = CardDefaults.cardColors(containerColor = Bone), shape = RoundedCornerShape(18.dp)) {
+                        Column(Modifier.padding(14.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(Modifier.size(44.dp).clip(CircleShape).background(Color.White), Alignment.Center) { Text(ai.name.take(2), fontWeight = FontWeight.Bold, color = Loam) }
+                            Text(ai.name, fontWeight = FontWeight.SemiBold, color = Loam, fontSize = 14.sp, maxLines = 1, modifier = Modifier.padding(top = 8.dp))
+                            Text(if (n == 0) ai.group else "$n account" + if (n > 1) "s" else "", color = Muted, fontSize = 12.sp)
+                            if (n > 0) Text("+ Add account", color = Loam, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp).clickable { onAddAccount(ai) })
+                        }
+                    }
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+        item {
+            OutlinedButton(onClick = { custom = true }, Modifier.fillMaxWidth(), border = BorderStroke(1.dp, Loam)) { Text("Any other AI: add it by link", color = Loam) }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+    if (custom) CustomAiDialog(onDismiss = { custom = false }, onAdd = { custom = false; onAddAccount(it) })
+}
+
+@Composable
+fun PickerDialog(all: List<AI>, accounts: List<Account>, onDismiss: () -> Unit, onAi: (AI) -> Unit) {
+    var q by remember { mutableStateOf("") }
+    AlertDialog(onDismissRequest = onDismiss, confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = Loam) } }, title = { Text("Open an AI") }, text = {
+        Column {
+            OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search") })
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                items(Catalog.filter(all, q, "All")) { ai ->
+                    Row(Modifier.fillMaxWidth().clickable { onAi(ai) }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(ai.name, Modifier.weight(1f), color = Loam)
+                        val n = accounts.count { it.aiId == ai.id }; if (n > 0) Text("$n", color = Muted)
+                    }
+                }
+            }
+        }
+    })
+}
+
+private val QUICK = listOf("\uD83D\uDE00", "\uD83D\uDCA1", "\uD83D\uDE80", "\uD83C\uDF31", "\uD83D\uDCBC", "\uD83C\uDFE0", "\uD83C\uDFA8", "\uD83D\uDCDA", "\u2B50", "\uD83D\uDD25")
+
+@Composable
+fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave: (Account) -> Unit, onDelete: (() -> Unit)?) {
+    var nick by remember { mutableStateOf(initial.nickname) }
+    var emoji by remember { mutableStateOf(initial.emoji) }
+    var note by remember { mutableStateOf(initial.note) }
+    AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
+        confirmButton = { TextButton(onClick = { onSave(initial.copy(nickname = nick.trim(), emoji = emoji.trim(), note = note.trim())) }) { Text("Save", color = Loam) } },
+        dismissButton = { Row { if (onDelete != null) TextButton(onClick = onDelete) { Text("Remove", color = Color(0xFFB3261E)) }; TextButton(onClick = onDismiss) { Text("Cancel", color = Loam) } } },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(nick, { nick = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Nickname (like Work or Personal)") })
+            Text("Pick an emoji", color = Muted, fontSize = 12.sp)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(QUICK) { e -> Box(Modifier.size(38.dp).clip(CircleShape).background(if (emoji == e) Sprout else Bone).clickable { emoji = e }, Alignment.Center) { Text(e, fontSize = 18.sp) } } }
+            OutlinedTextField(emoji, { emoji = it.take(4) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Or type your own") })
+            OutlinedTextField(note, { note = it.take(80) }, Modifier.fillMaxWidth(), label = { Text("Short note (optional)") })
+        } })
+}
+
+@Composable
+fun CustomAiDialog(onDismiss: () -> Unit, onAdd: (AI) -> Unit) {
+    var name by remember { mutableStateOf("") }; var url by remember { mutableStateOf("https://") }
+    val ok = name.isNotBlank() && Regex("^https://[^\\s/]+\\.[^\\s]+").matches(url.trim())
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Add any AI") },
+        confirmButton = { TextButton(enabled = ok, onClick = { onAdd(AI("custom-" + System.currentTimeMillis(), name.trim(), url.trim(), "Any")) }) { Text("Add", color = Loam) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Loam) } },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
+            OutlinedTextField(url, { url = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Link (https://...)") })
+        } })
+}
+
+@Composable
+fun SettingsDialog(user: User, sync: String, onDismiss: () -> Unit, onLogout: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    fun web(u: String) = CustomTabsIntent.Builder().build().launchUrl(ctx, Uri.parse(u))
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Settings") }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = Loam) } }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(user.email.ifBlank { user.name.ifBlank { "Signed in" } }, fontWeight = FontWeight.SemiBold, color = Loam)
+            Text("Sync: $sync", color = Muted, fontSize = 13.sp)
+            Text("Your AI logins stay on this phone. We never see or store them.", color = Muted, fontSize = 13.sp)
+            TextButton(onClick = { web("https://support897.github.io/needsme/privacy.html") }) { Text("Privacy policy", color = Loam) }
+            TextButton(onClick = { web("https://support897.github.io/needsme/terms.html") }) { Text("Terms of use", color = Loam) }
+            TextButton(onClick = { web("https://support897.github.io/needsme/support.html") }) { Text("Help and support", color = Loam) }
+            TextButton(onClick = { web(APP_URL) }) { Text("Delete my account (opens your account page)", color = Loam) }
+            TextButton(onClick = onLogout) { Text("Log out", color = Color(0xFFB3261E)) }
+        }
+    })
+}

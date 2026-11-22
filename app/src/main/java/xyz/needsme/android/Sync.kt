@@ -1,0 +1,44 @@
+package xyz.needsme.android
+
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+/**
+ * Saves the list of AIs (names, emoji, notes) to the same Needs Me account the Mac app uses.
+ * AI passwords and cookies are never part of it.
+ */
+object Sync {
+    private const val PROJECT = "needs-me-480ea"
+    private fun call(method: String, url: String, body: String? = null, bearer: String? = null, form: Boolean = false): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.requestMethod = method; c.connectTimeout = 15000; c.readTimeout = 20000
+        bearer?.let { c.setRequestProperty("Authorization", "Bearer $it") }
+        if (body != null) {
+            c.doOutput = true
+            c.setRequestProperty("Content-Type", if (form) "application/x-www-form-urlencoded" else "application/json")
+            c.outputStream.use { it.write(body.toByteArray()) }
+        }
+        val code = c.responseCode
+        val text = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.readText() ?: ""
+        if (code !in 200..299) throw RuntimeException("HTTP $code")
+        return text
+    }
+    fun idToken(apiKey: String, refresh: String): String =
+        JSONObject(call("POST", "https://securetoken.googleapis.com/v1/token?key=$apiKey", "grant_type=refresh_token&refresh_token=$refresh", form = true)).getString("id_token")
+
+    private fun docUrl(uid: String) = "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/(default)/documents/users/$uid/settings/android"
+
+    fun push(apiKey: String, refresh: String, uid: String, json: String) {
+        val t = idToken(apiKey, refresh)
+        val body = JSONObject().put("fields", JSONObject()
+            .put("json", JSONObject().put("stringValue", json))
+            .put("updated", JSONObject().put("integerValue", System.currentTimeMillis().toString()))
+            .put("device", JSONObject().put("stringValue", "android"))).toString()
+        call("PATCH", docUrl(uid) + "?updateMask.fieldPaths=json&updateMask.fieldPaths=updated&updateMask.fieldPaths=device", body, t)
+    }
+    fun pull(apiKey: String, refresh: String, uid: String): String? = try {
+        val t = idToken(apiKey, refresh)
+        JSONObject(call("GET", docUrl(uid), bearer = t)).getJSONObject("fields").getJSONObject("json").getString("stringValue")
+    } catch (e: Exception) { null }
+}
