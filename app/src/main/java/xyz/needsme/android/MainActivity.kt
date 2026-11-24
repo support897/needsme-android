@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -85,6 +86,7 @@ fun Hub(act: MainActivity, user: User) {
     var adding by remember { mutableStateOf<AI?>(null) }
     var settings by remember { mutableStateOf(false) }
     var syncMsg by remember { mutableStateOf("Not synced yet") }
+    var photoV by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     val webs = remember { mutableMapOf<String, AccountWeb>() }
 
@@ -114,7 +116,7 @@ fun Hub(act: MainActivity, user: User) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        TabStrip(accounts, tabs, current, onHome = { current = null }, onTab = { current = it }, onClose = ::close, onAdd = { picker = true })
+        TabStrip(accounts, tabs, current, onHome = { current = null }, onTab = { current = it }, onClose = ::close, onAdd = { picker = true }, onSwitch = ::open)
         Box(Modifier.weight(1f)) {
             val cur = current?.let { store.account(it) ?: accounts.firstOrNull { a -> a.id == it } }
             if (cur == null) Home(all, accounts, user, onOpen = ::open,
@@ -127,7 +129,7 @@ fun Hub(act: MainActivity, user: User) {
         }
     }
     if (picker) PickerDialog(all, accounts, onDismiss = { picker = false },
-        onAi = { ai -> picker = false; val ex = accounts.firstOrNull { it.aiId == ai.id }; if (ex != null) open(ex.id) else adding = ai })
+        onAi = { ai -> picker = false; adding = ai }, onAccount = { picker = false; open(it) })
     adding?.let { ai -> AccountDialog(title = "Add ${ai.name}", initial = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = ""), onDismiss = { adding = null },
         onSave = { a -> adding = null; persist(accounts + a); open(a.id) }, onDelete = null) }
     editing?.let { a -> AccountDialog(title = "Edit ${a.title}", initial = a, onDismiss = { editing = null },
@@ -140,9 +142,20 @@ fun Hub(act: MainActivity, user: User) {
 private var pendingCb: ValueCallback<Array<Uri>>? = null
 
 @Composable
-fun TabStrip(accounts: List<Account>, tabs: List<String>, current: String?, onHome: () -> Unit, onTab: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit) {
+fun TabStrip(accounts: List<Account>, tabs: List<String>, current: String?, onHome: () -> Unit, onTab: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit, onSwitch: (String) -> Unit = {}) {
+    var menu by remember { mutableStateOf(false) }
     LazyRow(Modifier.fillMaxWidth().background(Bone).padding(vertical = 6.dp), contentPadding = PaddingValues(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         item { Chip("Home", current == null, onHome) }
+        item { Box {
+            Box(Modifier.size(34.dp).clip(CircleShape).background(Color.White).clickable { menu = true }, Alignment.Center) { Text("\u25BE", color = Loam, fontSize = 16.sp) }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                accounts.groupBy { it.aiName }.forEach { (ai, list) ->
+                    Text(ai, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+                    list.forEach { a -> DropdownMenuItem(text = { Text((if (a.id == current) "\u2713 " else "") + a.title) }, onClick = { menu = false; onSwitch(a.id) }, leadingIcon = { Avatar(a, 24.dp) }) }
+                }
+                if (accounts.isEmpty()) DropdownMenuItem(text = { Text("No accounts yet") }, onClick = { menu = false })
+            }
+        } }
         items(tabs) { id ->
             val a = accounts.firstOrNull { it.id == id } ?: return@items
             Row(Modifier.clip(RoundedCornerShape(20.dp)).background(if (current == id) Loam else Color.White).clickable { onTab(id) }.padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -167,6 +180,7 @@ fun Home(all: List<AI>, accounts: List<Account>, user: User, onOpen: (String) ->
     var q by remember { mutableStateOf("") }
     var group by remember { mutableStateOf("All") }
     var custom by remember { mutableStateOf(false) }
+    var showAll by remember { mutableStateOf(accounts.isEmpty()) }
     val groups = remember(all) { listOf("All") + all.map { it.group }.distinct() }
     val shown = Catalog.filter(all, q, group)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -184,16 +198,18 @@ fun Home(all: List<AI>, accounts: List<Account>, user: User, onOpen: (String) ->
             LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 items(accounts) { a ->
                     Column(Modifier.width(72.dp).clickable { onOpen(a.id) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(56.dp).clip(CircleShape).background(Bone).clickable { onOpen(a.id) }, Alignment.Center) { Text(a.initial, fontSize = 22.sp, color = Loam) }
+                        Avatar(a, 56.dp)
                         Text(a.title, fontSize = 12.sp, maxLines = 1, color = Loam)
                         Text("Edit", fontSize = 11.sp, color = Muted, modifier = Modifier.clickable { onEdit(a) })
                     }
                 }
             }
         }
-        item { OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search ${all.size} AIs") }, shape = RoundedCornerShape(14.dp)) }
-        item { LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { items(groups) { g -> Chip(g, g == group) { group = g } } } }
-        items(shown.chunked(2)) { row ->
+        item { Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Bone).clickable { showAll = !showAll }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (accounts.isEmpty()) "Pick an AI" else "Add another AI", Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Loam); Text(if (showAll) "\u25B4" else "\u25BE", color = Loam) } }
+        if (showAll) item { OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search ${all.size} AIs") }, shape = RoundedCornerShape(14.dp)) }
+        if (showAll) item { LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { items(groups) { g -> Chip(g, g == group) { group = g } } } }
+        if (showAll) items(shown.chunked(2)) { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 row.forEach { ai ->
                     val n = accounts.count { it.aiId == ai.id }
@@ -209,7 +225,7 @@ fun Home(all: List<AI>, accounts: List<Account>, user: User, onOpen: (String) ->
                 if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
-        item {
+        if (showAll) item {
             OutlinedButton(onClick = { custom = true }, Modifier.fillMaxWidth(), border = BorderStroke(1.dp, Loam)) { Text("Any other AI: add it by link", color = Loam) }
             Spacer(Modifier.height(24.dp))
         }
@@ -218,12 +234,19 @@ fun Home(all: List<AI>, accounts: List<Account>, user: User, onOpen: (String) ->
 }
 
 @Composable
-fun PickerDialog(all: List<AI>, accounts: List<Account>, onDismiss: () -> Unit, onAi: (AI) -> Unit) {
+fun PickerDialog(all: List<AI>, accounts: List<Account>, onDismiss: () -> Unit, onAi: (AI) -> Unit, onAccount: (String) -> Unit = {}) {
     var q by remember { mutableStateOf("") }
     AlertDialog(onDismissRequest = onDismiss, confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = Loam) } }, title = { Text("Open an AI") }, text = {
         Column {
             OutlinedTextField(q, { q = it }, Modifier.fillMaxWidth(), singleLine = true, placeholder = { Text("Search") })
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                val mine = accounts.filter { q.isBlank() || it.title.contains(q, true) || it.aiName.contains(q, true) }
+                if (mine.isNotEmpty()) {
+                    item { Text("Your accounts", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
+                    items(mine) { a -> Row(Modifier.fillMaxWidth().clickable { onAccount(a.id) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(a, 32.dp); Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(a.title, color = Loam); Text(a.aiName, color = Muted, fontSize = 11.sp) } } }
+                    item { Text("More AIs to add", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)) }
+                }
                 items(Catalog.filter(all, q, "All")) { ai ->
                     Row(Modifier.fillMaxWidth().clickable { onAi(ai) }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(ai.name, Modifier.weight(1f), color = Loam)
@@ -235,15 +258,20 @@ fun PickerDialog(all: List<AI>, accounts: List<Account>, onDismiss: () -> Unit, 
     })
 }
 
+private val COLORS = listOf(0xA8C256L, 0x16120EL, 0xF0EAE0L, 0xE5484DL, 0xF5A524L, 0xF2D14BL, 0x2FBF71L, 0x2BB7C8L, 0x3E7BFAL, 0x7C5CFAL, 0xD64FB0L, 0x8B6B4AL)
 private val QUICK = listOf("\uD83D\uDE00", "\uD83D\uDCA1", "\uD83D\uDE80", "\uD83C\uDF31", "\uD83D\uDCBC", "\uD83C\uDFE0", "\uD83C\uDFA8", "\uD83D\uDCDA", "\u2B50", "\uD83D\uDD25")
 
 @Composable
-fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave: (Account) -> Unit, onDelete: (() -> Unit)?) {
+fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave: (Account) -> Unit, onDelete: (() -> Unit)?, onPhoto: () -> Unit = {}) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var color by remember { mutableStateOf(initial.color) }
+    var pv by remember { mutableStateOf(0) }
+    val photo = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { u -> if (u != null) { Photos.save(ctx, initial.id, u); pv++; onPhoto() } }
     var nick by remember { mutableStateOf(initial.nickname) }
     var emoji by remember { mutableStateOf(initial.emoji) }
     var note by remember { mutableStateOf(initial.note) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
-        confirmButton = { TextButton(onClick = { onSave(initial.copy(nickname = nick.trim(), emoji = emoji.trim(), note = note.trim())) }) { Text("Save", color = Loam) } },
+        confirmButton = { TextButton(onClick = { onSave(initial.copy(nickname = nick.trim(), emoji = emoji.trim(), note = note.trim(), color = color)) }) { Text("Save", color = Loam) } },
         dismissButton = { Row { if (onDelete != null) TextButton(onClick = onDelete) { Text("Remove", color = Color(0xFFB3261E)) }; TextButton(onClick = onDismiss) { Text("Cancel", color = Loam) } } },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(nick, { nick = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Nickname (like Work or Personal)") })
@@ -251,6 +279,15 @@ fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(QUICK) { e -> Box(Modifier.size(38.dp).clip(CircleShape).background(if (emoji == e) Sprout else Bone).clickable { emoji = e }, Alignment.Center) { Text(e, fontSize = 18.sp) } } }
             OutlinedTextField(emoji, { emoji = it.take(4) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Or type your own") })
             OutlinedTextField(note, { note = it.take(80) }, Modifier.fillMaxWidth(), label = { Text("Short note (optional)") })
+            Text("Color", color = Muted, fontSize = 12.sp)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(COLORS) { c -> Box(Modifier.size(34.dp).clip(CircleShape).background(Color(0xFF000000 or c)).border(if (color == c) 3.dp else 1.dp, if (color == c) Loam else Muted.copy(alpha = .3f), CircleShape).clickable { color = c }) } }
+            var hex by remember(color) { mutableStateOf(if (color == 0L) "" else "%06X".format(color)) }
+            OutlinedTextField(hex, { v -> hex = v.filter { it.isLetterOrDigit() }.take(6).uppercase(); if (hex.length == 6) hex.toLongOrNull(16)?.let { color = it } }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Any color (hex, like 3E7BFA)") })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Avatar(initial.copy(color = color, emoji = emoji), 44.dp, pv)
+                OutlinedButton(onClick = { photo.launch("image/*") }) { Text("Use a photo", color = Loam) }
+                if (Photos.load(ctx, initial.id) != null) TextButton(onClick = { Photos.clear(ctx, initial.id); pv++; onPhoto() }) { Text("Remove photo", color = Muted) }
+            }
         } })
 }
 

@@ -14,6 +14,7 @@ data class Account(
     val nickname: String,
     val emoji: String = "",
     val note: String = "",
+    val color: Long = 0L,
 ) {
     val profile get() = "acct_$id"
     val title get() = nickname.ifBlank { aiName }
@@ -38,13 +39,13 @@ class Store(ctx: Context) {
     companion object {
         fun encode(list: List<Account>): String = JSONArray().also { arr ->
             list.forEach { arr.put(JSONObject().put("id", it.id).put("aiId", it.aiId).put("aiName", it.aiName).put("url", it.url)
-                .put("nickname", it.nickname).put("emoji", it.emoji).put("note", it.note)) }
+                .put("nickname", it.nickname).put("emoji", it.emoji).put("note", it.note).put("color", it.color)) }
         }.toString()
         fun decode(json: String): List<Account> = try {
             val a = JSONArray(json)
             (0 until a.length()).map { a.getJSONObject(it) }.map {
                 Account(it.getString("id"), it.getString("aiId"), it.getString("aiName"), it.getString("url"),
-                    it.optString("nickname"), it.optString("emoji"), it.optString("note"))
+                    it.optString("nickname"), it.optString("emoji"), it.optString("note"), it.optLong("color", 0L))
             }
         } catch (e: Exception) { emptyList() }
     }
