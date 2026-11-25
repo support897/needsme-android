@@ -44,17 +44,19 @@ class MainActivity : ComponentActivity() {
     var launchFile: ((ValueCallback<Array<Uri>>, Intent) -> Unit)? = null
     private val userState = mutableStateOf<User?>(null)
     private val checking = mutableStateOf(true)
+    val openAcct = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         auth = AuthHost(this) { u -> userState.value = u; checking.value = false }
         handleLink(intent)
+        Notify.ask(this)
         setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Loam, secondary = Sprout, background = Color.White, surface = Color.White)) {
             App(this, userState.value, checking.value)
         } }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handleLink(intent) }
-    private fun handleLink(i: Intent?) { i?.data?.let { if (it.scheme == "needsme") auth.finish(it) } }
+    private fun handleLink(i: Intent?) { i?.data?.let { if (it.scheme == "needsme") auth.finish(it) }; i?.getStringExtra("acct")?.let { openAcct.value = it } }
     override fun onResume() { super.onResume(); auth.start() }
     override fun onPause() { super.onPause(); auth.stop() }
     fun logout(done: () -> Unit) { userState.value = null; auth.logout(done) }
@@ -110,13 +112,16 @@ fun Hub(act: MainActivity, user: User) {
             val l = Store.decode(j); if (l.isNotEmpty()) { accounts = l; store.save(l); syncMsg = "Synced" }
         }
     }
+    LaunchedEffect(act.openAcct.value, accounts) { act.openAcct.value?.let { id -> if (accounts.any { it.id == id }) { open(id); act.openAcct.value = null } } }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(6000); webs.forEach { (id, aw) -> store.account(id)?.let { a -> Notify.check(ctx, a, aw.web, id == current && act.hasWindowFocus()) } } } }
+    LaunchedEffect(adding) { adding?.let { ai -> val a = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = "", setup = true); adding = null; persist(accounts + a); open(a.id) } }
     BackHandler(current != null) {
         val w = webs[current]?.web
         if (w != null && w.canGoBack()) w.goBack() else current = null
     }
 
     Column(Modifier.fillMaxSize()) {
-        TabStrip(accounts, tabs, current, onHome = { current = null }, onTab = { current = it }, onClose = ::close, onAdd = { picker = true }, onSwitch = ::open)
+        TabStrip(accounts, tabs, current, onHome = { current = null }, onTab = { current = it }, onClose = ::close, onAdd = { picker = true }, onSwitch = ::open, onAnother = { a -> adding = AI(a.aiId, a.aiName, a.url, "") })
         Box(Modifier.weight(1f)) {
             val cur = current?.let { store.account(it) ?: accounts.firstOrNull { a -> a.id == it } }
             if (cur == null) Home(all, accounts, user, onOpen = ::open,
@@ -124,16 +129,20 @@ fun Hub(act: MainActivity, user: User) {
                 onAddAccount = { adding = it }, onEdit = { editing = it }, onSettings = { settings = true })
             else {
                 val aw = webs.getOrPut(cur.id) { AccountWeb(act, cur, pick) }
-                AndroidView(factory = { c -> FrameLayout(c).also { it.show(aw.web) } }, update = { it.show(aw.web) }, modifier = Modifier.fillMaxSize())
+                Column(Modifier.fillMaxSize()) {
+                    if (cur.setup) Row(Modifier.fillMaxWidth().background(Sprout).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Sign in below, then tap the button", color = Loam, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        Button(onClick = { editing = cur }, colors = ButtonDefaults.buttonColors(containerColor = Loam)) { Text("I'm logged in", color = Bone) }
+                    }
+                    AndroidView(factory = { c -> FrameLayout(c).also { it.show(aw.web) } }, update = { it.show(aw.web) }, modifier = Modifier.fillMaxSize())
+                }
             }
         }
     }
     if (picker) PickerDialog(all, accounts, onDismiss = { picker = false },
         onAi = { ai -> picker = false; adding = ai }, onAccount = { picker = false; open(it) })
-    adding?.let { ai -> AccountDialog(title = "Add ${ai.name}", initial = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = ""), onDismiss = { adding = null },
-        onSave = { a -> adding = null; persist(accounts + a); open(a.id) }, onDelete = null) }
     editing?.let { a -> AccountDialog(title = "Edit ${a.title}", initial = a, onDismiss = { editing = null },
-        onSave = { n -> editing = null; persist(accounts.map { if (it.id == n.id) n else it }) },
+        onSave = { n -> editing = null; val fin = n.copy(setup = false); persist(accounts.map { if (it.id == n.id) fin else it }); if (a.setup) { Notify.ask(act); Notify.post(act, fin, "Alerts are on", "Tap an alert to jump back to this account.") } },
         onDelete = { editing = null; close(a.id); Profiles.delete(a.profile); persist(accounts.filter { it.id != a.id }) }) }
     if (settings) SettingsDialog(user, syncMsg, onDismiss = { settings = false }, onLogout = {
         settings = false; accounts.forEach { Profiles.delete(it.profile) }; store.clear(); webs.values.forEach { it.web.destroy() }; act.logout {}
@@ -142,7 +151,7 @@ fun Hub(act: MainActivity, user: User) {
 private var pendingCb: ValueCallback<Array<Uri>>? = null
 
 @Composable
-fun TabStrip(accounts: List<Account>, tabs: List<String>, current: String?, onHome: () -> Unit, onTab: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit, onSwitch: (String) -> Unit = {}) {
+fun TabStrip(accounts: List<Account>, tabs: List<String>, current: String?, onHome: () -> Unit, onTab: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit, onSwitch: (String) -> Unit = {}, onAnother: (Account) -> Unit = {}) {
     var menu by remember { mutableStateOf(false) }
     LazyRow(Modifier.fillMaxWidth().background(Bone).padding(vertical = 6.dp), contentPadding = PaddingValues(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
         item { Chip("Home", current == null, onHome) }
@@ -152,6 +161,7 @@ fun TabStrip(accounts: List<Account>, tabs: List<String>, current: String?, onHo
                 accounts.groupBy { it.aiName }.forEach { (ai, list) ->
                     Text(ai, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
                     list.forEach { a -> DropdownMenuItem(text = { Text((if (a.id == current) "\u2713 " else "") + a.title) }, onClick = { menu = false; onSwitch(a.id) }, leadingIcon = { Avatar(a, 24.dp) }) }
+                    DropdownMenuItem(text = { Text("+ Add another $ai account", color = Muted) }, onClick = { menu = false; onAnother(list.first()) })
                 }
                 if (accounts.isEmpty()) DropdownMenuItem(text = { Text("No accounts yet") }, onClick = { menu = false })
             }
@@ -270,8 +280,9 @@ fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave
     var nick by remember { mutableStateOf(initial.nickname) }
     var emoji by remember { mutableStateOf(initial.emoji) }
     var note by remember { mutableStateOf(initial.note) }
+    var nf by remember { mutableStateOf(initial.nf) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
-        confirmButton = { TextButton(onClick = { onSave(initial.copy(nickname = nick.trim(), emoji = emoji.trim(), note = note.trim(), color = color)) }) { Text("Save", color = Loam) } },
+        confirmButton = { TextButton(onClick = { onSave(initial.copy(nickname = nick.trim(), emoji = emoji.trim(), note = note.trim(), color = color, nf = nf)) }) { Text("Save", color = Loam) } },
         dismissButton = { Row { if (onDelete != null) TextButton(onClick = onDelete) { Text("Remove", color = Color(0xFFB3261E)) }; TextButton(onClick = onDismiss) { Text("Cancel", color = Loam) } } },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(nick, { nick = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Nickname (like Work or Personal)") })
@@ -283,6 +294,10 @@ fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(COLORS) { c -> Box(Modifier.size(34.dp).clip(CircleShape).background(Color(0xFF000000 or c)).border(if (color == c) 3.dp else 1.dp, if (color == c) Loam else Muted.copy(alpha = .3f), CircleShape).clickable { color = c }) } }
             var hex by remember(color) { mutableStateOf(if (color == 0L) "" else "%06X".format(color)) }
             OutlinedTextField(hex, { v -> hex = v.filter { it.isLetterOrDigit() }.take(6).uppercase(); if (hex.length == 6) hex.toLongOrNull(16)?.let { color = it } }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Any color (hex, like 3E7BFA)") })
+            Text("Alerts", color = Muted, fontSize = 12.sp)
+            listOf(NF_DONE to "When it finishes a job", NF_NEEDS to "When it needs me", NF_MSGS to "When a new message comes").forEach { (bit, label) ->
+                Row(Modifier.fillMaxWidth().clickable { nf = nf xor bit }, verticalAlignment = Alignment.CenterVertically) { Checkbox(nf and bit != 0, { nf = nf xor bit }); Text(label, fontSize = 14.sp) }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(initial.copy(color = color, emoji = emoji), 44.dp, pv)
                 OutlinedButton(onClick = { photo.launch("image/*") }) { Text("Use a photo", color = Loam) }
