@@ -27,13 +27,28 @@ object Photos {
     private fun file(ctx: Context, id: String) = File(ctx.filesDir, "avatar-$id.jpg")
     fun load(ctx: Context, id: String): Bitmap? = file(ctx, id).takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.path) }
     fun save(ctx: Context, id: String, uri: Uri) {
-        val src = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) } ?: return
+        // Read the size first, then load a small copy: a full 12 MP photo used to run the phone out of memory (crash).
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, o) }
+        var sample = 1; while (o.outWidth / (sample * 2) >= 256 && o.outHeight / (sample * 2) >= 256) sample *= 2
+        val src = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) } ?: return
         val side = 256; val s = maxOf(side.toFloat() / src.width, side.toFloat() / src.height)
         val scaled = Bitmap.createScaledBitmap(src, (src.width * s).toInt().coerceAtLeast(side), (src.height * s).toInt().coerceAtLeast(side), true)
         val sq = Bitmap.createBitmap(scaled, (scaled.width - side) / 2, (scaled.height - side) / 2, side, side)
         file(ctx, id).outputStream().use { sq.compress(Bitmap.CompressFormat.JPEG, 85, it) }
     }
     fun clear(ctx: Context, id: String) { file(ctx, id).delete() }
+    /** Small copy (128 px) as a data link, so the picture shows on every device. */
+    fun dataUrl(ctx: Context, id: String): String {
+        val b = load(ctx, id) ?: return ""
+        val s = Bitmap.createScaledBitmap(b, 128, 128, true)
+        val out = java.io.ByteArrayOutputStream(); s.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        return "data:image/jpeg;base64," + android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+    }
+    fun fromDataUrl(ctx: Context, id: String, url: String) {
+        if (url.isBlank()) { clear(ctx, id); return }
+        try { val bytes = android.util.Base64.decode(url.substringAfter(","), android.util.Base64.DEFAULT); file(ctx, id).writeBytes(bytes) } catch (_: Exception) {}
+    }
 }
 
 /** Light colors get dark marks, dark colors get light marks, so it is always readable. */

@@ -98,22 +98,51 @@ fun Hub(act: MainActivity, user: User) {
     }
     val pick: (ValueCallback<Array<Uri>>, Intent) -> Unit = { cb, i -> pendingCb?.onReceiveValue(null); pendingCb = cb; chooser.launch(i) }
 
+    var syncing by remember { mutableStateOf(false) }
+    /** Items 2, 9, 14: one shared list for the whole Needs Me account (phone, web, every computer). */
+    fun sharedSync() {
+        if (syncing) return; syncing = true
+        val gone = store.gone()
+        val local = accounts.map { SharedList.fromAccount(it, Photos.dataUrl(ctx, it.id)) } +
+            gone.map { (id, at) -> Shared(id, "", "", "", "", "", "", "", "", 7, 7, at, true) }
+        scope.launch {
+            try {
+                val merged = withContext(Dispatchers.IO) { Sync.sharedRound(user.apiKey, user.refresh, user.uid, local) }
+                val g = gone.toMutableMap(); var changed = false; val next = mutableListOf<Account>()
+                for (s in merged) {
+                    val mine = accounts.firstOrNull { it.id == s.id }
+                    if (s.del) { if (mine != null) { changed = true; webs.remove(s.id)?.web?.destroy(); Profiles.delete(mine.profile); Photos.clear(ctx, s.id) }; g[s.id] = s.at; continue }
+                    if (mine == null || s.at > mine.at) {
+                        next += SharedList.toAccount(s, mine) { id -> all.firstOrNull { it.id == id }?.url }
+                        withContext(Dispatchers.IO) { Photos.fromDataUrl(ctx, s.id, s.img) }; photoV++; changed = true
+                    } else next += mine
+                }
+                if (changed) { accounts = next; store.save(next); tabs = tabs.filter { id -> next.any { it.id == id } }; store.setTabs(tabs) }
+                store.setGone(g)
+                syncMsg = "Synced"
+            } catch (e: Exception) { syncMsg = "Not synced (${e.message})" } finally { syncing = false }
+        }
+    }
     fun persist(list: List<Account>) {
-        accounts = list; store.save(list)
-        scope.launch(Dispatchers.IO) { try { Sync.push(user.apiKey, user.refresh, user.uid, Store.encode(list)); syncMsg = "Synced" } catch (e: Exception) { syncMsg = "Not synced (${e.message})" } }
+        val now = System.currentTimeMillis(); val g = store.gone().toMutableMap()
+        val stamped = list.map { a -> val o = accounts.firstOrNull { it.id == a.id }; if (o == null || o.copy(at = 0L, setup = false) != a.copy(at = 0L, setup = false)) a.copy(at = now) else a }
+        accounts.filter { o -> list.none { it.id == o.id } }.forEach { g[it.id] = now }
+        list.forEach { g.remove(it.id) }
+        store.setGone(g); accounts = stamped; store.save(stamped)
+        sharedSync()
     }
     fun open(id: String) { if (id !in tabs) { tabs = tabs + id; store.setTabs(tabs) }; current = id }
     fun close(id: String) {
         tabs = tabs - id; store.setTabs(tabs); webs.remove(id)?.web?.destroy()
         if (current == id) current = tabs.lastOrNull()
     }
-    LaunchedEffect(user.uid) { // a new phone picks up the list from the account
-        if (store.accounts.isEmpty()) withContext(Dispatchers.IO) { Sync.pull(user.apiKey, user.refresh, user.uid) }?.let { j ->
-            val l = Store.decode(j); if (l.isNotEmpty()) { accounts = l; store.save(l); syncMsg = "Synced" }
-        }
+    LaunchedEffect(user.uid) { // every phone keeps the same list as the account: now, and every minute while open
+        while (true) { sharedSync(); delay(60000) }
     }
     LaunchedEffect(act.openAcct.value, accounts) { act.openAcct.value?.let { id -> if (accounts.any { it.id == id }) { open(id); act.openAcct.value = null } } }
-    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(6000); webs.forEach { (id, aw) -> store.account(id)?.let { a -> Notify.check(ctx, a, aw.web, id == current && act.hasWindowFocus()) } } } }
+    var chatsTick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(15000); chatsTick++ } }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(6000); webs.forEach { (id, aw) -> store.account(id)?.let { a -> Notify.check(ctx, a, aw.web, id == current && act.hasWindowFocus(), all.firstOrNull { it.id == a.aiId }?.convo?.ifBlank { null }) } } } }
     LaunchedEffect(adding) { adding?.let { ai -> val a = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = "", setup = true); adding = null; persist(accounts + a); open(a.id) } }
     BackHandler(current != null) {
         val w = webs[current]?.web
@@ -124,7 +153,7 @@ fun Hub(act: MainActivity, user: User) {
         TabStrip(accounts, tabs, current, onHome = { current = null }, onTab = { current = it }, onClose = ::close, onAdd = { picker = true }, onSwitch = ::open, onAnother = { a -> adding = AI(a.aiId, a.aiName, a.url, "") })
         Box(Modifier.weight(1f)) {
             val cur = current?.let { store.account(it) ?: accounts.firstOrNull { a -> a.id == it } }
-            if (cur == null) Home(all, accounts, user, onOpen = ::open,
+            if (cur == null) Home(all, accounts, user, chatsTick, onChat = { id, href -> open(id); webs[id]?.web?.loadUrl(href) }, onOpen = ::open,
                 onPick = { ai -> val ex = accounts.firstOrNull { it.aiId == ai.id }; if (ex != null) open(ex.id) else adding = ai },
                 onAddAccount = { adding = it }, onEdit = { editing = it }, onSettings = { settings = true })
             else {
@@ -142,7 +171,7 @@ fun Hub(act: MainActivity, user: User) {
     if (picker) PickerDialog(all, accounts, onDismiss = { picker = false },
         onAi = { ai -> picker = false; adding = ai }, onAccount = { picker = false; open(it) })
     editing?.let { a -> AccountDialog(title = "Edit ${a.title}", initial = a, onDismiss = { editing = null },
-        onSave = { n -> editing = null; val fin = n.copy(setup = false); persist(accounts.map { if (it.id == n.id) fin else it }); if (a.setup) { Notify.ask(act); Notify.post(act, fin, "Alerts are on", "Tap an alert to jump back to this account.") } },
+        onSave = { n -> editing = null; val fin = n.copy(setup = false); persist(accounts.map { if (it.id == n.id) fin else it }); if (a.setup) { Notify.ask(act); Notify.post(act, fin, Notify.titleOf(fin), "Alerts are on. Tap an alert to jump back to this account.") } },
         onDelete = { editing = null; close(a.id); Profiles.delete(a.profile); persist(accounts.filter { it.id != a.id }) }) }
     if (settings) SettingsDialog(user, syncMsg, onDismiss = { settings = false }, onLogout = {
         settings = false; accounts.forEach { Profiles.delete(it.profile) }; store.clear(); webs.values.forEach { it.web.destroy() }; act.logout {}
@@ -186,7 +215,7 @@ fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-fun Home(all: List<AI>, accounts: List<Account>, user: User, onOpen: (String) -> Unit, onPick: (AI) -> Unit, onAddAccount: (AI) -> Unit, onEdit: (Account) -> Unit, onSettings: () -> Unit) {
+fun Home(all: List<AI>, accounts: List<Account>, user: User, tick: Int = 0, onChat: (String, String) -> Unit = { _, _ -> }, onOpen: (String) -> Unit, onPick: (AI) -> Unit, onAddAccount: (AI) -> Unit, onEdit: (Account) -> Unit, onSettings: () -> Unit) {
     var q by remember { mutableStateOf("") }
     var group by remember { mutableStateOf("All") }
     var custom by remember { mutableStateOf(false) }
@@ -213,6 +242,15 @@ fun Home(all: List<AI>, accounts: List<Account>, user: User, onOpen: (String) ->
                         Text("Edit", fontSize = 11.sp, color = Muted, modifier = Modifier.clickable { onEdit(a) })
                     }
                 }
+            }
+        }
+        val pulled = accounts.filter { it.use and 1 != 0 }.mapNotNull { a -> Notify.chats[a.id]?.takeIf { it.isNotEmpty() }?.let { a to it } }
+        if (pulled.isNotEmpty()) item {
+            Text("Your chats and projects", fontWeight = FontWeight.SemiBold, color = Loam)
+            Text("Read from each AI you opened. Tap one to open it.", color = Muted, fontSize = 12.sp)
+            pulled.forEach { (a, list) ->
+                Text(Notify.titleOf(a), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                list.take(6).forEach { (t, h) -> Text(t, color = Loam, fontSize = 14.sp, maxLines = 1, modifier = Modifier.fillMaxWidth().clickable { onChat(a.id, h) }.padding(vertical = 6.dp)) }
             }
         }
         item { Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Bone).clickable { showAll = !showAll }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -252,12 +290,12 @@ fun PickerDialog(all: List<AI>, accounts: List<Account>, onDismiss: () -> Unit, 
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
                 val mine = accounts.filter { q.isBlank() || it.title.contains(q, true) || it.aiName.contains(q, true) }
                 if (mine.isNotEmpty()) {
-                    item { Text("Your accounts", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
+                    item { Text("Already logged in", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
                     items(mine) { a -> Row(Modifier.fillMaxWidth().clickable { onAccount(a.id) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Avatar(a, 32.dp); Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(a.title, color = Loam); Text(a.aiName, color = Muted, fontSize = 11.sp) } } }
-                    item { Text("More AIs to add", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)) }
+                    item { Text("Not logged in yet", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)) }
                 }
-                items(Catalog.filter(all, q, "All")) { ai ->
+                items(Catalog.filter(all, q, "All").filter { ai -> accounts.none { it.aiId == ai.id } }) { ai ->
                     Row(Modifier.fillMaxWidth().clickable { onAi(ai) }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(ai.name, Modifier.weight(1f), color = Loam)
                         val n = accounts.count { it.aiId == ai.id }; if (n > 0) Text("$n", color = Muted)
@@ -281,15 +319,16 @@ fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave
     var emoji by remember { mutableStateOf(initial.emoji) }
     var note by remember { mutableStateOf(initial.note) }
     var nf by remember { mutableStateOf(initial.nf) }
+    var use by remember { mutableStateOf(initial.use) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) },
-        confirmButton = { TextButton(onClick = { onSave(initial.copy(nickname = nick.trim(), emoji = emoji.trim(), note = note.trim(), color = color, nf = nf)) }) { Text("Save", color = Loam) } },
+        confirmButton = { TextButton(onClick = { onSave(initial.copy(nickname = nick.trim(), emoji = emoji.trim(), note = note.trim(), color = color, nf = nf, use = use)) }) { Text("Save", color = Loam) } },
         dismissButton = { Row { if (onDelete != null) TextButton(onClick = onDelete) { Text("Remove", color = Color(0xFFB3261E)) }; TextButton(onClick = onDismiss) { Text("Cancel", color = Loam) } } },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(nick, { nick = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Nickname (like Work or Personal)") })
             Text("Pick an emoji", color = Muted, fontSize = 12.sp)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(QUICK) { e -> Box(Modifier.size(38.dp).clip(CircleShape).background(if (emoji == e) Sprout else Bone).clickable { emoji = e }, Alignment.Center) { Text(e, fontSize = 18.sp) } } }
             OutlinedTextField(emoji, { emoji = it.take(4) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Or type your own") })
-            OutlinedTextField(note, { note = it.take(80) }, Modifier.fillMaxWidth(), label = { Text("Short note (optional)") })
+            OutlinedTextField(note, { note = it.take(300) }, Modifier.fillMaxWidth(), label = { Text("Description (optional)") })
             Text("Color", color = Muted, fontSize = 12.sp)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(COLORS) { c -> Box(Modifier.size(34.dp).clip(CircleShape).background(Color(0xFF000000 or c)).border(if (color == c) 3.dp else 1.dp, if (color == c) Loam else Muted.copy(alpha = .3f), CircleShape).clickable { color = c }) } }
             var hex by remember(color) { mutableStateOf(if (color == 0L) "" else "%06X".format(color)) }
@@ -297,6 +336,10 @@ fun AccountDialog(title: String, initial: Account, onDismiss: () -> Unit, onSave
             Text("Alerts", color = Muted, fontSize = 12.sp)
             listOf(NF_DONE to "When it finishes a job", NF_NEEDS to "When it needs me", NF_MSGS to "When a new message comes").forEach { (bit, label) ->
                 Row(Modifier.fillMaxWidth().clickable { nf = nf xor bit }, verticalAlignment = Alignment.CenterVertically) { Checkbox(nf and bit != 0, { nf = nf xor bit }); Text(label, fontSize = 14.sp) }
+            }
+            Text("What NeedsMe does with this AI", color = Muted, fontSize = 12.sp)
+            listOf(1 to "Pull my chats and projects", 2 to "Use for Needs Me (tell me when it needs me)", 4 to "Show its updates").forEach { (bit, label) ->
+                Row(Modifier.fillMaxWidth().clickable { use = use xor bit }, verticalAlignment = Alignment.CenterVertically) { Switch(use and bit != 0, { use = use xor bit }); Text(label, fontSize = 14.sp, modifier = Modifier.padding(start = 8.dp)) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(initial.copy(color = color, emoji = emoji), 44.dp, pv)
