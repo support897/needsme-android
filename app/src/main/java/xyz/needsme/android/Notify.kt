@@ -79,7 +79,7 @@ object Notify {
                 val j = JSONObject(s); val b = j.optBoolean("b"); val l = j.optString("l")
                 if (a.use and 1 != 0) j.optJSONArray("c")?.let { c -> chats[a.id] = (0 until c.length()).map { c.getJSONObject(it).let { o -> o.optString("t") to o.optString("h") } } }
                 val body = decide(busy[a.id], last[a.id], b, l, sent[a.id], viewing, a.nf, a.use)
-                busy[a.id] = b; if (!b) last[a.id] = l
+                busy[a.id] = b; if (!b || !last.containsKey(a.id)) last[a.id] = l // first look while it is still typing: keep the partial text, so the finished reply still alerts
                 if (body != null) { sent[a.id] = body; post(ctx, a, titleOf(a), body) }
             } catch (_: Exception) {}
         }

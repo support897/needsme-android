@@ -12,6 +12,8 @@ All your AIs in one calm place. Sign in to each AI once, add more than one accou
 ## Build
 ```
 gradle assembleRelease      # signed with app/release.jks, or set NM_KEYSTORE and NM_KS_PASS
+# From v2.3.1 there is ONE fixed release key: GitHub secrets NM_KEYSTORE_B64 + NM_KS_PASS, backup in Cloudflare R2 bucket needsme-private/android-signing/.
+# Always sign with it, or phones cannot update (older v2.0-v2.3.0 were each signed with a different key).
 gradle testDebugUnitTest
 ```
 Requires JDK 17 and Android SDK 34.

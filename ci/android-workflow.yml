@@ -1,0 +1,79 @@
+# To turn on: copy to .github/workflows/android.yml (needs a GitHub token with the "workflow" scope). Secrets NM_KEYSTORE_B64, NM_KS_PASS, NM_LIVE_REFRESH, NM_LIVE_UID are already set.
+name: Android build, test and release
+# One fixed signing key (secret NM_KEYSTORE_B64), so every new APK installs as an update over the last one.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to publish the APK under (for example v2.3.1). Empty = build and test only."
+        required: false
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.9" }
+      - name: Signing key
+        env: { KS: "${{ secrets.NM_KEYSTORE_B64 }}" }
+        run: echo "$KS" | base64 -d > app/release.jks
+      - name: Unit tests (plus live sync test against the real server with the test account)
+        env:
+          NM_LIVE_REFRESH: ${{ secrets.NM_LIVE_REFRESH }}
+          NM_LIVE_UID: ${{ secrets.NM_LIVE_UID }}
+          NM_LIVE_EXPECT: desk-test-1
+        run: gradle testDebugUnitTest --info | grep -E "LIVE merged|Test.*(PASSED|FAILED|SKIPPED)|tests completed" || true; gradle testDebugUnitTest
+      - name: Build signed APK
+        env: { NM_KS_PASS: "${{ secrets.NM_KS_PASS }}" }
+        run: gradle assembleRelease && cp app/build/outputs/apk/release/app-release.apk NeedsMe-Android.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: apk, path: "NeedsMe-Android.apk" }
+  emulator:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: apk }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Install and open on an Android 14 phone emulator; fail on any crash
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          script: |
+            adb install -r NeedsMe-Android.apk
+            adb logcat -c
+            adb shell monkey -p xyz.needsme.android -c android.intent.category.LAUNCHER 1
+            sleep 25
+            adb exec-out screencap -p > launch.png
+            adb shell pidof xyz.needsme.android && echo "APP RUNNING" || (echo "APP NOT RUNNING"; exit 1)
+            adb shell monkey -p xyz.needsme.android --throttle 300 --pct-syskeys 0 -v 300 > monkey.txt 2>&1 || true
+            tail -5 monkey.txt
+            adb logcat -d > logcat.txt
+            if grep -n "FATAL EXCEPTION" -A 25 logcat.txt | grep -m1 -B2 -A25 "xyz.needsme"; then echo "CRASH FOUND"; exit 1; fi
+            grep -q "CRASH" monkey.txt && { grep -A20 CRASH monkey.txt; exit 1; } || echo "NO CRASH"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: emulator-proof, path: "launch.png\nlogcat.txt\nmonkey.txt" }
+  release:
+    needs: [build, emulator]
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: apk }
+      - env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release create "${{ inputs.release_tag }}" NeedsMe-Android.apk -R "${{ github.repository }}" \
+            --target "${{ github.sha }}" --title "NeedsMe Android ${{ inputs.release_tag }}" \
+            --notes "Signed with the one fixed NeedsMe key, so future versions install as updates. Built and tested by GitHub Actions (unit tests, live sync test, emulator launch and crash test)."
