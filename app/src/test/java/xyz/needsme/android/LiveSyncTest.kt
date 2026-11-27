@@ -14,7 +14,8 @@ class LiveSyncTest {
         val merged = Sync.sharedRound(key, refresh, uid, listOf(phone))
         println("LIVE merged ids: " + merged.map { it.id + "/" + it.name + "/del=" + it.del })
         assertTrue(merged.any { it.id == "phone-test-1" })
-        assertTrue("computer entry missing", merged.any { it.id == "desk-test-1" })
+        val expect = System.getenv("NM_LIVE_EXPECT") ?: "desk-test-1"
+        assertTrue("other-device entry missing: $expect", merged.any { it.id == expect })
         val again = Sync.sharedRound(key, refresh, uid, merged)
         assertTrue(SharedList.same(merged, again))
     }

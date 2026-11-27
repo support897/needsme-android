@@ -12,7 +12,9 @@ object Sync {
     private const val PROJECT = "needs-me-480ea"
     private fun call(method: String, url: String, body: String? = null, bearer: String? = null, form: Boolean = false): String {
         val c = URL(url).openConnection() as HttpURLConnection
-        c.requestMethod = method; c.connectTimeout = 15000; c.readTimeout = 20000
+        // Google APIs accept POST + X-HTTP-Method-Override, which works on every Java/Android HTTP stack (plain Java has no PATCH).
+        if (method == "PATCH") { c.requestMethod = "POST"; c.setRequestProperty("X-HTTP-Method-Override", "PATCH") } else c.requestMethod = method
+        c.connectTimeout = 15000; c.readTimeout = 20000
         bearer?.let { c.setRequestProperty("Authorization", "Bearer $it") }
         if (body != null) {
             c.doOutput = true
