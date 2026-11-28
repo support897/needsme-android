@@ -41,7 +41,7 @@ object Bridge {
         val id = idToken(u) ?: return
         try {
             val (s, b) = call("POST", "/tokens", id, """{"name":"NeedsMe Android"}""")
-            if (s == 200) prefs(c).edit().putString("t", JSONObject(b).getString("token")).apply()
+            if (s == 200) prefs(c).edit().putString("t", JSONObject(b).getString("token")).putString("since", java.time.Instant.now().toString()).apply()
         } catch (_: Exception) {}
     }
 
@@ -56,19 +56,21 @@ object Bridge {
         }
     }
 
-    /** Fetches new events, shows each as a phone alert, then tells the bridge they were delivered. Returns how many alerts were shown. */
+    /** Fetches events, shows each NEW one as a phone alert. Every device keeps its own "last seen" time, so a phone and a computer both get every alert. Returns how many were shown. */
     fun poll(c: Context): Int {
         val t = token(c) ?: return 0
         return try {
             val (s, b) = call("GET", "/events", t)
-            if (s == 401) { prefs(c).edit().remove("t").apply(); return 0 }
+            if (s == 401) { prefs(c).edit().remove("t").remove("since").apply(); return 0 }
             if (s != 200) return 0
-            val arr = JSONArray(b); val ids = JSONArray(); var shown = 0
-            for (i in 0 until arr.length()) {
-                val e = arr.getJSONObject(i); ids.put(e.optString("id"))
-                alertFor(e)?.let { (title, body) -> Notify.postRaw(c, e.optString("id"), title, body); shown++ }
+            val arr = JSONArray(b)
+            val since = prefs(c).getString("since", null)
+            var newest = since ?: java.time.Instant.now().toString(); var shown = 0
+            if (since != null) for (i in 0 until arr.length()) {
+                val e = arr.getJSONObject(i); val at = e.optString("at")
+                if (at > since) { alertFor(e)?.let { (title, body) -> Notify.postRaw(c, e.optString("id"), title, body); shown++ }; if (at > newest) newest = at }
             }
-            if (ids.length() > 0) call("POST", "/events/ack", t, JSONObject().put("ids", ids).toString())
+            prefs(c).edit().putString("since", newest).apply()
             shown
         } catch (_: Exception) { 0 }
     }
