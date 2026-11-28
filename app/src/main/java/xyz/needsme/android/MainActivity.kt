@@ -107,6 +107,7 @@ fun Hub(act: MainActivity, user: User) {
             gone.map { (id, at) -> Shared(id, "", "", "", "", "", "", "", "", 7, 7, at, true) }
         scope.launch {
             try {
+                withContext(Dispatchers.IO) { Bridge.ensureLink(ctx, user) }; Bridge.schedule(ctx)
                 val merged = withContext(Dispatchers.IO) { Sync.sharedRound(user.apiKey, user.refresh, user.uid, local) }
                 val g = gone.toMutableMap(); var changed = false; val next = mutableListOf<Account>()
                 for (s in merged) {
@@ -142,6 +143,7 @@ fun Hub(act: MainActivity, user: User) {
     LaunchedEffect(act.openAcct.value, accounts) { act.openAcct.value?.let { id -> if (accounts.any { it.id == id }) { open(id); act.openAcct.value = null } } }
     var chatsTick by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(15000); chatsTick++ } }
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(20000); withContext(Dispatchers.IO) { Bridge.poll(ctx) } } }
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(6000); webs.forEach { (id, aw) -> store.account(id)?.let { a -> Notify.check(ctx, a, aw.web, id == current && act.hasWindowFocus(), all.firstOrNull { it.id == a.aiId }?.convo?.ifBlank { null }) } } } }
     LaunchedEffect(adding) { adding?.let { ai -> val a = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = "", setup = true); adding = null; persist(accounts + a); open(a.id) } }
     BackHandler(current != null) {

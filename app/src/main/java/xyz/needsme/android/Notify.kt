@@ -53,6 +53,16 @@ object Notify {
         nm.notify((a.id + body).hashCode(), n)
     }
 
+    /** An alert that is not tied to one open page (it came from the bridge). */
+    fun postRaw(ctx: Context, key: String, title: String, body: String) {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(CHANNEL, "AI alerts", NotificationManager.IMPORTANCE_HIGH))
+        val pi = PendingIntent.getActivity(ctx, key.hashCode(), Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        nm.notify(key.hashCode(), NotificationCompat.Builder(ctx, CHANNEL).setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle(title).setContentText(body).setStyle(NotificationCompat.BigTextStyle().bigText(body)).setAutoCancel(true).setContentIntent(pi).build())
+    }
+
     /** Title of every alert: which AI and which account, like "ChatGPT · Work". */
     fun titleOf(a: Account) = if (a.nickname.isBlank() || a.nickname == a.aiName) a.aiName else a.aiName + " \u00b7 " + a.nickname
     private val ASKS = listOf("do you want me to", "would you like me to", "which one", "please confirm", "waiting for your", "need your approval", "?")

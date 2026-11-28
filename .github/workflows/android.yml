@@ -76,4 +76,4 @@ jobs:
         run: |
           gh release create "${{ inputs.release_tag }}" NeedsMe-Android.apk -R "${{ github.repository }}" \
             --target "${{ github.sha }}" --title "NeedsMe Android ${{ inputs.release_tag }}" \
-            --notes "Signed with the one fixed NeedsMe key, so future versions install as updates. Built and tested by GitHub Actions (unit tests, live sync test, emulator launch and crash test)."
+            --notes "Closed-app alerts from the NeedsMe bridge. Signed with the one fixed NeedsMe key, so future versions install as updates. Built and tested by GitHub Actions (unit tests, live sync test, emulator launch and crash test)."

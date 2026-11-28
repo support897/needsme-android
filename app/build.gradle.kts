@@ -9,8 +9,8 @@ android {
         applicationId = "xyz.needsme.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 240
-        versionName = "2.4.0"
+        versionCode = 241
+        versionName = "2.5.0"
     }
     signingConfigs {
         create("release") {
@@ -41,6 +41,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.webkit:webkit:1.11.0")
     implementation("androidx.browser:browser:1.8.0")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
