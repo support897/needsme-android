@@ -220,6 +220,7 @@ fun Home(all: List<AI>, accounts: List<Account>, user: User, tick: Int = 0, onCh
     var group by remember { mutableStateOf("All") }
     var custom by remember { mutableStateOf(false) }
     var showAll by remember { mutableStateOf(accounts.isEmpty()) }
+    var about by remember { mutableStateOf(false) }
     val groups = remember(all) { listOf("All") + all.map { it.group }.distinct() }
     val shown = Catalog.filter(all, q, group)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -251,6 +252,18 @@ fun Home(all: List<AI>, accounts: List<Account>, user: User, tick: Int = 0, onCh
             pulled.forEach { (a, list) ->
                 Text(Notify.titleOf(a), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
                 list.take(6).forEach { (t, h) -> Text(t, color = Loam, fontSize = 14.sp, maxLines = 1, modifier = Modifier.fillMaxWidth().clickable { onChat(a.id, h) }.padding(vertical = 6.dp)) }
+            }
+        }
+        item {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Bone).clickable { about = !about }.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("One AI or a workforce? What is MCP?", Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Loam); Text(if (about) "\u25B4" else "\u25BE", color = Loam) }
+                if (about) {
+                    Text("One AI is one helper. You ask, it does one job.", color = Loam, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                    Text("An AI workforce is a team of AIs. Each has its own job. They pass work along, and they tell you when they are stuck.", color = Loam, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                    Text("In NeedsMe, \"Your AIs\" is each helper by itself. Your workforce is all of them together: who is busy, who needs you, and what each one finished.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                    Text("MCP is a plug that lets an AI use another app. You paste a link into the AI. These take your own link: Claude, ChatGPT (web), Grok, Perplexity (Pro), Mistral, Gemini (limited), Cursor, VS Code, Claude Code, Codex CLI and Gemini CLI. Meta AI and DeepSeek do not. Polar is in your AI list: add it and open it like any other AI.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+                }
             }
         }
         item { Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Bone).clickable { showAll = !showAll }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
