@@ -28,7 +28,7 @@ jobs:
           NM_LIVE_REFRESH: ${{ secrets.NM_LIVE_REFRESH }}
           NM_LIVE_UID: ${{ secrets.NM_LIVE_UID }}
           NM_LIVE_EXPECT: desk-test-1
-        run: gradle testDebugUnitTest --info | grep -E "LIVE merged|Test.*(PASSED|FAILED|SKIPPED)|tests completed" || true; gradle testDebugUnitTest
+        run: gradle testDebugUnitTest --info | grep -E "LIVE merged|Test.*(PASSED|FAILED|SKIPPED)|tests completed" || true; env -u NM_LIVE_REFRESH -u NM_LIVE_UID gradle testDebugUnitTest
       - name: Build signed APK
         env: { NM_KS_PASS: "${{ secrets.NM_KS_PASS }}" }
         run: gradle assembleRelease && cp app/build/outputs/apk/release/app-release.apk NeedsMe-Android.apk
