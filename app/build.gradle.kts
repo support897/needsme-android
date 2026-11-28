@@ -9,8 +9,8 @@ android {
         applicationId = "xyz.needsme.android"
         minSdk = 26
         targetSdk = 34
-        versionCode = 241
-        versionName = "2.5.0"
+        versionCode = 260
+        versionName = "2.6.0"
     }
     signingConfigs {
         create("release") {

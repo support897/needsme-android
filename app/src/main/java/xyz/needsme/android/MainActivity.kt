@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
         auth = AuthHost(this) { u -> userState.value = u; checking.value = false }
         handleLink(intent)
         Notify.ask(this)
+        CrashLog.install(this); Thread { CrashLog.sendPending(this) }.start(); CheckIns.schedule(this)
         setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Loam, secondary = Sprout, background = Color.White, surface = Color.White)) {
             App(this, userState.value, checking.value)
         } }
@@ -137,15 +138,13 @@ fun Hub(act: MainActivity, user: User) {
         tabs = tabs - id; store.setTabs(tabs); webs.remove(id)?.web?.destroy()
         if (current == id) current = tabs.lastOrNull()
     }
-    LaunchedEffect(user.uid) { // every phone keeps the same list as the account: now, and every minute while open
-        while (true) { sharedSync(); delay(60000) }
-    }
+    LaunchedEffect(user.uid) { sharedSync() } // sync on open and sign-in; changes sync from persist(). No constant checking.
     LaunchedEffect(act.openAcct.value, accounts) { act.openAcct.value?.let { id -> if (accounts.any { it.id == id }) { open(id); act.openAcct.value = null } } }
     var chatsTick by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(15000); chatsTick++ } }
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(20000); withContext(Dispatchers.IO) { Bridge.poll(ctx) } } }
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(6000); webs.forEach { (id, aw) -> store.account(id)?.let { a -> Notify.check(ctx, a, aw.web, id == current && act.hasWindowFocus(), all.firstOrNull { it.id == a.aiId }?.convo?.ifBlank { null }) } } } }
-    LaunchedEffect(adding) { adding?.let { ai -> val a = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = "", setup = true); adding = null; persist(accounts + a); open(a.id) } }
+    LaunchedEffect(adding) { adding?.let { ai -> val a = Account(aiId = ai.id, aiName = ai.name, url = ai.url, nickname = "", setup = true); adding = null; persist(accounts + a); open(a.id); editing = a } }
     BackHandler(current != null) {
         val w = webs[current]?.web
         if (w != null && w.canGoBack()) w.goBack() else current = null
@@ -163,7 +162,7 @@ fun Hub(act: MainActivity, user: User) {
                 Column(Modifier.fillMaxSize()) {
                     if (cur.setup) Row(Modifier.fillMaxWidth().background(Sprout).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("Sign in below, then tap the button", color = Loam, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        Button(onClick = { editing = cur }, colors = ButtonDefaults.buttonColors(containerColor = Loam)) { Text("I'm logged in", color = Bone) }
+                        Button(onClick = { val fin = cur.copy(setup = false); persist(accounts.map { if (it.id == cur.id) fin else it }); Notify.ask(act); Notify.post(act, fin, Notify.titleOf(fin), "Alerts are on. Tap an alert to jump back to this account.") }, colors = ButtonDefaults.buttonColors(containerColor = Loam)) { Text("I'm logged in", color = Bone) }
                     }
                     AndroidView(factory = { c -> FrameLayout(c).also { it.show(aw.web) } }, update = { it.show(aw.web) }, modifier = Modifier.fillMaxSize())
                 }
@@ -172,8 +171,8 @@ fun Hub(act: MainActivity, user: User) {
     }
     if (picker) PickerDialog(all, accounts, onDismiss = { picker = false },
         onAi = { ai -> picker = false; adding = ai }, onAccount = { picker = false; open(it) })
-    editing?.let { a -> AccountDialog(title = "Edit ${a.title}", initial = a, onDismiss = { editing = null },
-        onSave = { n -> editing = null; val fin = n.copy(setup = false); persist(accounts.map { if (it.id == n.id) fin else it }); if (a.setup) { Notify.ask(act); Notify.post(act, fin, Notify.titleOf(fin), "Alerts are on. Tap an alert to jump back to this account.") } },
+    editing?.let { a -> AccountDialog(title = if (a.setup) "Make it yours: ${a.title}" else "Edit ${a.title}", initial = a, onDismiss = { editing = null },
+        onSave = { n -> editing = null; val fin = n.copy(setup = a.setup); persist(accounts.map { if (it.id == n.id) fin else it }); if (false) { Notify.ask(act); Notify.post(act, fin, Notify.titleOf(fin), "Alerts are on. Tap an alert to jump back to this account.") } },
         onDelete = { editing = null; close(a.id); Profiles.delete(a.profile); persist(accounts.filter { it.id != a.id }) }) }
     if (settings) SettingsDialog(user, syncMsg, onDismiss = { settings = false }, onLogout = {
         settings = false; accounts.forEach { Profiles.delete(it.profile) }; store.clear(); webs.values.forEach { it.web.destroy() }; act.logout {}
@@ -385,6 +384,8 @@ fun SettingsDialog(user: User, sync: String, onDismiss: () -> Unit, onLogout: ()
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(user.email.ifBlank { user.name.ifBlank { "Signed in" } }, fontWeight = FontWeight.SemiBold, color = Loam)
             Text("Sync: $sync", color = Muted, fontSize = 13.sp)
+            var ci by remember { mutableStateOf(CheckIns.on(ctx)) }
+            Row(verticalAlignment = Alignment.CenterVertically) { Text("Daily check-ins (9am, 1pm, 6pm)", color = Loam, modifier = Modifier.weight(1f)); Switch(checked = ci, onCheckedChange = { ci = it; CheckIns.set(ctx, it) }) }
             Text("Your AI logins stay on this phone. We never see or store them.", color = Muted, fontSize = 13.sp)
             TextButton(onClick = { web("https://support897.github.io/needsme/privacy.html") }) { Text("Privacy policy", color = Loam) }
             TextButton(onClick = { web("https://support897.github.io/needsme/terms.html") }) { Text("Terms of use", color = Loam) }
